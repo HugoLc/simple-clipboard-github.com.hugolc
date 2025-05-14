@@ -1,0 +1,8 @@
+{
+  "name": "Simple Clipboard",
+  "description": "Histórico de clipboard",
+  "uuid": "simple-clipboard@github.com.hugolc",
+  "shell-version": [
+    "48"
+  ]
+}
