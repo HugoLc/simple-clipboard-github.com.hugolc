@@ -460,11 +460,14 @@ const ClipboardIndicator = GObject.registerClass(
       
       // Adicionar o conteúdo (texto ou imagem) após o ícone de favorito
       if (item.isText) {
+        // Remover espaços no início e fim para exibição
+        let trimmedContent = item.content.trim();
+
         // Truncar o texto para exibição
         let displayText =
-          item.content.length > 50
-            ? item.content.substring(0, 47) + "..."
-            : item.content;
+          trimmedContent.length > 50
+            ? trimmedContent.substring(0, 47) + "..."
+            : trimmedContent;
         displayText = displayText.replace(/\n/g, " ");
 
         // Criar label para o texto
@@ -474,7 +477,7 @@ const ClipboardIndicator = GObject.registerClass(
           x_align: Clutter.ActorAlign.START,
           y_align: Clutter.ActorAlign.CENTER,
         });
-        
+
         mainBox.add_child(label);
       } else {
         // Para imagens, criar uma visualização em miniatura
