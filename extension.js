@@ -143,34 +143,59 @@ const ClipboardIndicator = GObject.registerClass(
       );
 
       // Verificar conteúdo de imagem
-      this._clipboard.get_image(
+      this._clipboard.get_content(
         St.ClipboardType.CLIPBOARD,
-        (clipboard, image) => {
-          if (image) {
-            // Converter a imagem em base64 para armazenamento
-            if (image !== this._previousImage) {
-              this._previousImage = image;
+        "image/png",
+        (clipboard, bytes) => {
+          if (bytes && bytes.get_size() > 0) {
+            try {
+              // Criar um stream a partir dos bytes
+              let stream = Gio.MemoryInputStream.new_from_bytes(bytes);
 
-              // Converter o pixbuf em texto base64 para armazenamento
-              let [width, height] = image.get_dimensions();
+              // Carregar como pixbuf
+              let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
 
-              // Limitamos o tamanho para armazenamento
-              let scaleFactor = 1;
-              if (width > 300 || height > 300) {
-                scaleFactor = Math.min(300 / width, 300 / height);
+              if (pixbuf) {
+                // Vamos redimensionar para economizar espaço
+                let width = pixbuf.get_width();
+                let height = pixbuf.get_height();
+
+                // Limitamos o tamanho para armazenamento
+                let scaleFactor = 1;
+                if (width > 300 || height > 300) {
+                  scaleFactor = Math.min(300 / width, 300 / height);
+
+                  let scaledWidth = Math.floor(width * scaleFactor);
+                  let scaledHeight = Math.floor(height * scaleFactor);
+
+                  let scaledImage = pixbuf.scale_simple(
+                    scaledWidth,
+                    scaledHeight,
+                    GdkPixbuf.InterpType.BILINEAR
+                  );
+
+                  pixbuf = scaledImage;
+                }
+
+                // Converter a imagem para base64
+                let base64Data = this._pixbufToBase64(pixbuf);
+
+                // Não salvamos na memória exatamente o mesmo pixbuf,
+                // mas podemos verificar se o tamanho dos dados são iguais
+                // para evitar duplicações no histórico
+                let imageContent = `data:image/png;base64,${base64Data}`;
+
+                // Adicionar ao histórico se for diferente da anterior
+                if (
+                  !this._previousImage ||
+                  this._previousImage !== imageContent
+                ) {
+                  this._previousImage = imageContent;
+                  this._addToHistory(imageContent, false);
+                }
               }
-
-              let scaledImage = image.scale_simple(
-                width * scaleFactor,
-                height * scaleFactor,
-                2 // GDK_INTERP_BILINEAR
-              );
-
-              // Armazenar a imagem como base64 (simplificado)
-              let imageContent = `data:image/png;base64,${this._pixbufToBase64(
-                scaledImage
-              )}`;
-              this._addToHistory(imageContent, false);
+            } catch (e) {
+              logError(e, "Falha ao processar imagem do clipboard");
             }
           }
         }
@@ -254,19 +279,30 @@ const ClipboardIndicator = GObject.registerClass(
         if (content.startsWith("data:image/png;base64,")) {
           try {
             // Extrair a parte base64 da string
-            let base64Data = content.replace('data:image/png;base64,', '');
-            
+            let base64Data = content.replace("data:image/png;base64,", "");
+
             // Converter base64 para bytes
             let bytes = GLib.base64_decode(base64Data);
-            
+
             // Criar um stream a partir dos bytes
-            let stream = Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(bytes));
-            
+            let stream = Gio.MemoryInputStream.new_from_bytes(
+              new GLib.Bytes(bytes)
+            );
+
             // Carregar como pixbuf
             let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
-            
+
             // Colocar a imagem no clipboard
-            this._clipboard.set_content(St.ClipboardType.CLIPBOARD, "image/png", pixbuf);
+            // Nota: isso é importante: precisamos usar bytes em vez de pixbuf direto
+            let [success, buffer] = pixbuf.save_to_bufferv("png", [], []);
+            if (success) {
+              let bytes = GLib.Bytes.new(buffer);
+              this._clipboard.set_content(
+                St.ClipboardType.CLIPBOARD,
+                "image/png",
+                bytes
+              );
+            }
           } catch (e) {
             logError(e, 'Falha ao colar imagem');
           }
@@ -274,7 +310,10 @@ const ClipboardIndicator = GObject.registerClass(
       }
 
       // Simular Ctrl+V para colar automaticamente
-      this._simulateKeyPress();
+      GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+        this._simulateKeyPress();
+        return GLib.SOURCE_REMOVE;
+      });
     }
 
     _simulateKeyPress() {
@@ -382,60 +421,50 @@ const ClipboardIndicator = GObject.registerClass(
         menuItem = new PopupMenu.PopupBaseMenuItem();
         let box = new St.BoxLayout({ vertical: false });
 
-        if (item.content.startsWith('data:image/png;base64,')) {
+        if (item.content.startsWith("data:image/png;base64,")) {
           try {
-            // Extrair a base64 da string
-            let base64Data = item.content.replace('data:image/png;base64,', '');
-            
-            // Converter base64 para bytes
-            let bytes = GLib.base64_decode(base64Data);
-            
-            // Criar um Gio.MemoryInputStream a partir dos bytes
-            let stream = Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(bytes));
-            
-            // Tentar carregar a imagem a partir do stream
-            let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
-            
-            // Criar a miniatura a partir do pixbuf
-            let textureCache = St.TextureCache.get_default();
-            let scaleFactor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-            
-            // Tamanho máximo da miniatura
-            let maxWidth = 100;
-            let maxHeight = 60;
-            
-            // Criar a textura
-            let texture = new Clutter.Image();
-            texture.set_data(
-              pixbuf.get_pixels(),
-              pixbuf.get_has_alpha() ? Cogl.PixelFormat.RGBA_8888 : Cogl.PixelFormat.RGB_888,
-              pixbuf.get_width(),
-              pixbuf.get_height(),
-              pixbuf.get_rowstride()
+            // Preparar dados de imagem
+            let base64Data = item.content.replace("data:image/png;base64,", "");
+            let imageData = GLib.base64_decode(base64Data);
+
+            // Criar arquivo temporário para a miniatura
+            let [tempFile, tempPath] = Gio.File.new_tmp(
+              "clipboard-thumbnail-XXXXXX.png"
             );
-            
-            // Criar o ator de imagem
-            let aspectRatio = pixbuf.get_width() / pixbuf.get_height();
-            let width, height;
-            
-            if (aspectRatio > maxWidth / maxHeight) {
-              width = Math.min(pixbuf.get_width(), maxWidth);
-              height = width / aspectRatio;
-            } else {
-              height = Math.min(pixbuf.get_height(), maxHeight);
-              width = height * aspectRatio;
-            }
-            
-            let preview = new St.Icon({
-              style_class: 'clipboard-image-preview',
+            tempFile.replace_contents(
+              imageData,
+              null,
+              false,
+              Gio.FileCreateFlags.REPLACE_DESTINATION,
+              null
+            );
+
+            // Criar um GIcon a partir do arquivo
+            let gicon = Gio.FileIcon.new(tempFile);
+
+            // Criar miniatura de imagem
+            let imageIcon = new St.Icon({
+              gicon: gicon,
+              icon_size: 48, // Tamanho razoável para menu
+              style_class: "clipboard-image-preview",
             });
-            preview.set_size(width, height);
-            preview.set_content(texture);
-            
-            box.add_child(preview);
+
+            box.add_child(imageIcon);
+
+            // Adicionar evento de limpeza quando o menu fechar
+            this.menu.connect("open-state-changed", (menu, isOpen) => {
+              if (!isOpen) {
+                try {
+                  // Apagar arquivos temporários quando fechar
+                  tempFile.delete(null);
+                } catch (e) {
+                  // Ignorar erros ao tentar apagar arquivo temporário
+                }
+              }
+            });
           } catch (e) {
-            logError(e, 'Falha ao exibir imagem');
-            // Fallback para ícone de imagem se falhar
+            logError(e, "Falha ao exibir miniatura da imagem");
+            // Fallback para ícone padrão
             let icon = new St.Icon({
               icon_name: "insert-image-symbolic",
               style_class: "popup-menu-icon",
@@ -450,10 +479,6 @@ const ClipboardIndicator = GObject.registerClass(
           });
           box.add_child(icon);
         }
-
-        let label = new St.Label({ text: _("Imagem") });
-        box.add_child(label);
-
         menuItem.add_child(box);
       }
 
@@ -462,6 +487,7 @@ const ClipboardIndicator = GObject.registerClass(
         style_class: "clipboard-favorite-button",
         x_expand: false,
         y_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
       });
 
       let favIcon = new St.Icon({
