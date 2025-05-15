@@ -10,7 +10,17 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
+ * You should ha      // Adicionar a caixa principal ao item de menu
+      menuItem.add_child(mainBox);
+
+      // Conectar evento de clique para colar o conteúdo
+      menuItem.connect("activate", () => {
+        this._pasteItem(item.content, item.isText);
+        this.menu.close();
+      });
+
+      section.addMenuItem(menuItem);
+    }d a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -172,28 +182,12 @@ const ClipboardIndicator = GObject.registerClass(
               let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
 
               if (pixbuf) {
-                // Vamos redimensionar para economizar espaço
+                // Salvar dimensões originais da imagem
                 let width = pixbuf.get_width();
                 let height = pixbuf.get_height();
 
-                // Limitamos o tamanho para armazenamento
-                let scaleFactor = 1;
-                if (width > 300 || height > 300) {
-                  scaleFactor = Math.min(300 / width, 300 / height);
-
-                  let scaledWidth = Math.floor(width * scaleFactor);
-                  let scaledHeight = Math.floor(height * scaleFactor);
-
-                  let scaledImage = pixbuf.scale_simple(
-                    scaledWidth,
-                    scaledHeight,
-                    GdkPixbuf.InterpType.BILINEAR
-                  );
-
-                  pixbuf = scaledImage;
-                }
-
-                // Converter a imagem para base64
+                // Converter a imagem para base64 sem redimensionar
+                // Isso mantém o tamanho original para colagem posterior
                 let base64Data = this._pixbufToBase64(pixbuf);
 
                 // Não salvamos na memória exatamente o mesmo pixbuf,
@@ -431,8 +425,40 @@ const ClipboardIndicator = GObject.registerClass(
       }
     }
     _addMenuItem(item, section, isFavorite) {
-      let menuItem;
+      // Criar o item de menu base que conterá todos os elementos
+      let menuItem = new PopupMenu.PopupBaseMenuItem();
+      
+      // Layout principal que organize todos os elementos
+      let mainBox = new St.BoxLayout({
+        vertical: false,
+        x_expand: true,
+      });
+      
+      // Adicionar ícone de favorito (agora primeiro elemento)
+      let favButton = new St.Button({
+        style_class: "clipboard-favorite-button",
+        x_expand: false,
+        y_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
 
+      let favIcon = new St.Icon({
+        icon_name: item.isFavorite
+          ? "starred-symbolic"
+          : "non-starred-symbolic",
+        style_class: "popup-menu-icon",
+      });
+
+      favButton.set_child(favIcon);
+      favButton.connect("clicked", () => {
+        this._toggleFavorite(item);
+        return Clutter.EVENT_STOP;
+      });
+
+      // Adicionar o botão de favorito como primeiro elemento
+      mainBox.add_child(favButton);
+      
+      // Adicionar o conteúdo (texto ou imagem) após o ícone de favorito
       if (item.isText) {
         // Truncar o texto para exibição
         let displayText =
@@ -441,11 +467,22 @@ const ClipboardIndicator = GObject.registerClass(
             : item.content;
         displayText = displayText.replace(/\n/g, " ");
 
-        menuItem = new PopupMenu.PopupMenuItem(displayText);
+        // Criar label para o texto
+        let label = new St.Label({
+          text: displayText,
+          x_expand: true,
+          x_align: Clutter.ActorAlign.START,
+          y_align: Clutter.ActorAlign.CENTER,
+        });
+        
+        mainBox.add_child(label);
       } else {
         // Para imagens, criar uma visualização em miniatura
-        menuItem = new PopupMenu.PopupBaseMenuItem();
-        let box = new St.BoxLayout({ vertical: false });
+        let imageBox = new St.BoxLayout({ 
+          vertical: false,
+          x_expand: true,
+          x_align: Clutter.ActorAlign.START,
+        });
 
         if (item.content.startsWith("data:image/png;base64,")) {
           try {
@@ -475,7 +512,7 @@ const ClipboardIndicator = GObject.registerClass(
               style_class: "clipboard-image-preview",
             });
 
-            box.add_child(imageIcon);
+            imageBox.add_child(imageIcon);
 
             // Adicionar evento de limpeza quando o menu fechar
             this.menu.connect("open-state-changed", (menu, isOpen) => {
@@ -495,7 +532,7 @@ const ClipboardIndicator = GObject.registerClass(
               icon_name: "insert-image-symbolic",
               style_class: "popup-menu-icon",
             });
-            box.add_child(icon);
+            imageBox.add_child(icon);
           }
         } else {
           // Fallback para ícone de imagem
@@ -503,33 +540,14 @@ const ClipboardIndicator = GObject.registerClass(
             icon_name: "insert-image-symbolic",
             style_class: "popup-menu-icon",
           });
-          box.add_child(icon);
+          imageBox.add_child(icon);
         }
-        menuItem.add_child(box);
+        
+        mainBox.add_child(imageBox);
       }
-
-      // Adicionar ícone de favorito
-      let favButton = new St.Button({
-        style_class: "clipboard-favorite-button",
-        x_expand: false,
-        y_expand: true,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
-
-      let favIcon = new St.Icon({
-        icon_name: item.isFavorite
-          ? "starred-symbolic"
-          : "non-starred-symbolic",
-        style_class: "popup-menu-icon",
-      });
-
-      favButton.set_child(favIcon);
-      favButton.connect("clicked", () => {
-        this._toggleFavorite(item);
-        return Clutter.EVENT_STOP;
-      });
-
-      menuItem.add_child(favButton);
+      
+      // Adicionar a caixa principal ao item de menu
+      menuItem.add_child(mainBox);
 
       // Conectar evento de clique para colar o conteúdo
       menuItem.connect("activate", () => {
