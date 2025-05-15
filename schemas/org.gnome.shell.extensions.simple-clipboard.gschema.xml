@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.simple-clipboard" path="/org/gnome/shell/extensions/simple-clipboard/">
+    <key name="clipboard-shortcut" type="as">
+      <default><![CDATA[['<Super>v']]]></default>
+      <summary>Atalho para abrir o histórico do clipboard</summary>
+      <description>Atalho de teclado para abrir o painel do histórico do clipboard</description>
+    </key>
+  </schema>
+</schemalist>

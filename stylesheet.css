@@ -29,3 +29,13 @@
   font-weight: bold;
   padding: 4px 0;
 }
+
+/* Estilo para a caixa de scroll do histórico */
+.clipboard-history-scrollbox {
+  max-height: 300px;
+}
+
+/* Estilo para limitar a altura do painel */
+.popup-menu-content {
+  max-height: 500px !important;
+}

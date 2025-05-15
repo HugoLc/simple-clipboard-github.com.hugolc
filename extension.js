@@ -89,13 +89,29 @@ const ClipboardIndicator = GObject.registerClass(
       // Adicionar separador entre favoritos e histórico normal
       this.menu.addMenuItem(
         new PopupMenu.PopupSeparatorMenuItem(_("Histórico"))
-      );
+      ); // Criar um ScrollView para histórico limitado em altura
+      let historyScrollSection = new PopupMenu.PopupMenuSection();
+      let historyScrollBox = new St.ScrollView({
+        style_class: "clipboard-history-scrollbox",
+        hscrollbar_policy: St.PolicyType.NEVER,
+        vscrollbar_policy: St.PolicyType.AUTOMATIC,
+        overlay_scrollbars: true,
+      });
+      // Adicionar box vertical dentro do scroll para os itens
+      let historyVerticalBox = new St.BoxLayout({
+        vertical: true,
+      });
+      historyScrollBox.set_child(historyVerticalBox);
 
-      // Seção para histórico normal
+      // Criar menu section para conter os itens
       this._historySection = new PopupMenu.PopupMenuSection();
-      this.menu.addMenuItem(this._historySection);
+      historyVerticalBox.add_child(this._historySection.actor);
 
-      // Footer com opções adicionais
+      // Adicionar o scroll à seção principal
+      historyScrollSection.actor.add_child(historyScrollBox);
+      this.menu.addMenuItem(historyScrollSection);
+
+      // Footer com opções adicionaisv
       this._addFooterOptions();
 
       // Atualizar o menu
@@ -203,21 +219,19 @@ const ClipboardIndicator = GObject.registerClass(
     }
 
     _pixbufToBase64(pixbuf) {
-        if (!pixbuf)
-            return null;
-            
-        try {
-            // Use o GdkPixbuf para salvar a imagem como PNG em um buffer de memória
-            let [success, buffer] = pixbuf.save_to_bufferv('png', [], []);
-            if (!success)
-                return null;
-                
-            // Converter o buffer para base64
-            return GLib.base64_encode(buffer);
-        } catch (e) {
-            logError(e, 'Falha ao converter pixbuf para base64');
-            return null;
-        }
+      if (!pixbuf) return null;
+
+      try {
+        // Use o GdkPixbuf para salvar a imagem como PNG em um buffer de memória
+        let [success, buffer] = pixbuf.save_to_bufferv("png", [], []);
+        if (!success) return null;
+
+        // Converter o buffer para base64
+        return GLib.base64_encode(buffer);
+      } catch (e) {
+        logError(e, "Falha ao converter pixbuf para base64");
+        return null;
+      }
     }
 
     _addToHistory(content, isText) {
@@ -304,7 +318,7 @@ const ClipboardIndicator = GObject.registerClass(
               );
             }
           } catch (e) {
-            logError(e, 'Falha ao colar imagem');
+            logError(e, "Falha ao colar imagem");
           }
         }
       }
@@ -317,56 +331,68 @@ const ClipboardIndicator = GObject.registerClass(
     }
 
     _simulateKeyPress() {
-        // Simular pressionamento de Ctrl+V usando o Clutter.VirtualInputDevice
-        let backend = Clutter.get_default_backend();
-        if (!backend.get_default_seat) {
-            logError(new Error('Backend não suporta get_default_seat'));
-            return;
-        }
+      // Simular pressionamento de Ctrl+V usando o Clutter.VirtualInputDevice
+      let backend = Clutter.get_default_backend();
+      if (!backend.get_default_seat) {
+        logError(new Error("Backend não suporta get_default_seat"));
+        return;
+      }
 
-        let seat = backend.get_default_seat();
-        if (!seat.create_virtual_device) {
-            logError(new Error('Seat não suporta create_virtual_device'));
-            return;
-        }
+      let seat = backend.get_default_seat();
+      if (!seat.create_virtual_device) {
+        logError(new Error("Seat não suporta create_virtual_device"));
+        return;
+      }
 
-        let virtualDevice = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
-        if (!virtualDevice) {
-            logError(new Error('Não foi possível criar o dispositivo virtual'));
-            return;
-        }
+      let virtualDevice = seat.create_virtual_device(
+        Clutter.InputDeviceType.KEYBOARD_DEVICE
+      );
+      if (!virtualDevice) {
+        logError(new Error("Não foi possível criar o dispositivo virtual"));
+        return;
+      }
 
-        // Primeiro liberamos qualquer ctrl pressionado para evitar problemas
-        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
-                                   Clutter.KEY_Control_L, 
-                                   Clutter.KeyState.RELEASED);
+      // Primeiro liberamos qualquer ctrl pressionado para evitar problemas
+      virtualDevice.notify_keyval(
+        Clutter.get_current_event_time(),
+        Clutter.KEY_Control_L,
+        Clutter.KeyState.RELEASED
+      );
 
-        // Agora simulamos a sequência ctrl+v
-        // Pressiona CTRL
-        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
-                                   Clutter.KEY_Control_L, 
-                                   Clutter.KeyState.PRESSED);
-        
-        // Pressiona V
-        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
-                                   Clutter.KEY_v, 
-                                   Clutter.KeyState.PRESSED);
-        
-        // Solta V
-        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
-                                   Clutter.KEY_v, 
-                                   Clutter.KeyState.RELEASED);
-        
-        // Solta CTRL
-        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
-                                   Clutter.KEY_Control_L, 
-                                   Clutter.KeyState.RELEASED);
+      // Agora simulamos a sequência ctrl+v
+      // Pressiona CTRL
+      virtualDevice.notify_keyval(
+        Clutter.get_current_event_time(),
+        Clutter.KEY_Control_L,
+        Clutter.KeyState.PRESSED
+      );
 
-        // Garantir que a aplicação atual receba o evento de teclado
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-            Main.findModal(null)?.popModal();
-            return GLib.SOURCE_REMOVE;
-        });
+      // Pressiona V
+      virtualDevice.notify_keyval(
+        Clutter.get_current_event_time(),
+        Clutter.KEY_v,
+        Clutter.KeyState.PRESSED
+      );
+
+      // Solta V
+      virtualDevice.notify_keyval(
+        Clutter.get_current_event_time(),
+        Clutter.KEY_v,
+        Clutter.KeyState.RELEASED
+      );
+
+      // Solta CTRL
+      virtualDevice.notify_keyval(
+        Clutter.get_current_event_time(),
+        Clutter.KEY_Control_L,
+        Clutter.KeyState.RELEASED
+      );
+
+      // Garantir que a aplicação atual receba o evento de teclado
+      GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+        Main.findModal(null)?.popModal();
+        return GLib.SOURCE_REMOVE;
+      });
     }
 
     _updateMenu() {
@@ -618,12 +644,41 @@ const ClipboardIndicator = GObject.registerClass(
 
 export default class SimpleClipboardExtension extends Extension {
   enable() {
+    // Inicializar as configurações
+    this._settings = this.getSettings();
+
     this._indicator = new ClipboardIndicator(this.path);
     Main.panel.addToStatusArea(this.uuid, this._indicator);
+
+    // Adicionar atalho de teclado Super+V
+    this._addKeybinding();
+  }
+
+  _addKeybinding() {
+    // Adicionar atalho Super+V para abrir o painel do clipboard
+    Main.wm.addKeybinding(
+      "clipboard-shortcut",
+      this._settings,
+      Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
+      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+      () => {
+        // Alternar a visibilidade do menu
+        if (this._indicator.menu.isOpen) {
+          this._indicator.menu.close();
+        } else {
+          this._indicator.menu.open();
+        }
+      }
+    );
   }
 
   disable() {
+    // Remover atalho de teclado
+    Main.wm.removeKeybinding("clipboard-shortcut");
+
     this._indicator.destroy();
     this._indicator = null;
+
+    this._settings = null;
   }
 }
