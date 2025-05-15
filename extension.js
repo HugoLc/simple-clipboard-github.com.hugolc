@@ -236,8 +236,12 @@ const ClipboardIndicator = GObject.registerClass(
         item.equals(newItem)
       );
 
-      // Remover item existente se encontrado
+      // Se o item existir, preservar seu status de favorito
       if (existingIndex !== -1) {
+        const existingItem = this._clipboardHistory[existingIndex];
+        // Preservar o status de favorito do item existente
+        newItem.isFavorite = existingItem.isFavorite;
+        // Remover o item existente
         this._clipboardHistory.splice(existingIndex, 1);
       }
 
