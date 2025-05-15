@@ -1,1 +1,31 @@
 /* Add your custom extension styling here */
+
+/* Estilo para botões de favorito no menu */
+.clipboard-favorite-button {
+  border-radius: 12px;
+  padding: 4px;
+  margin-left: 6px;
+}
+
+.clipboard-favorite-button:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Estilização para itens de menu do clipboard */
+.clipboard-item-text {
+  max-width: 300px;
+  text-overflow: ellipsis;
+}
+
+/* Estilo para miniatura de imagem no clipboard */
+.clipboard-image-preview {
+  max-width: 200px;
+  max-height: 150px;
+  margin: 2px;
+}
+
+/* Seção de favoritos */
+.favorites-section-title {
+  font-weight: bold;
+  padding: 4px 0;
+}

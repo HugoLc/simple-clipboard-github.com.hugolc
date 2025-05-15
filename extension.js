@@ -18,39 +18,586 @@
 
 import GObject from 'gi://GObject';
 import St from 'gi://St';
+import Gio from "gi://Gio";
+import GLib from "gi://GLib";
+import Clutter from "gi://Clutter";
+import Meta from "gi://Meta";
+import Shell from "gi://Shell";
+import GdkPixbuf from 'gi://GdkPixbuf';
+import Cogl from 'gi://Cogl';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-
+import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const Indicator = GObject.registerClass(
-class Indicator extends PanelMenu.Button {
-    _init() {
-        super._init(0.0, _('My Shiny Indicator'));
+const MAX_HISTORY_ITEMS = 50;
+const HISTORY_STORAGE_FILE = "clipboard-history.json";
+const CLIPBOARD_SAVE_TIMEOUT = 500; // ms para aguardar antes de salvar no histórico
 
-        this.add_child(new St.Icon({
-            icon_name: 'face-smile-symbolic',
-            style_class: 'system-status-icon',
-        }));
+// Classe para gerenciar os itens do clipboard
+const ClipboardItem = class {
+  constructor(content, isText, timestamp = Date.now(), isFavorite = false) {
+    this.content = content;
+    this.isText = isText;
+    this.timestamp = timestamp;
+    this.isFavorite = isFavorite;
+  }
 
-        let item = new PopupMenu.PopupMenuItem(_('Show Notification'));
-        item.connect('activate', () => {
-            Main.notify(_('Whatʼs up, folks?'));
+  equals(other) {
+    return this.isText === other.isText && this.content === other.content;
+  }
+};
+
+const ClipboardIndicator = GObject.registerClass(
+  class ClipboardIndicator extends PanelMenu.Button {
+    _init(extensionPath) {
+      super._init(0.0, _("Histórico do Clipboard"));
+
+      this._extensionPath = extensionPath;
+      this._clipboardHistory = [];
+      this._favoriteItems = [];
+      this._clipboard = St.Clipboard.get_default();
+      this._selection = Shell.Global.get().get_display().get_selection();
+      this._selectionOwnerChangedId = 0;
+      this._historyStoragePath = GLib.build_filenamev([
+        GLib.get_user_data_dir(),
+        "gnome-shell",
+        "extensions",
+        "simple-clipboard@github.com.hugolc",
+        HISTORY_STORAGE_FILE,
+      ]);
+      this._previousText = "";
+      this._previousImage = null;
+      this._timeoutId = 0;
+
+      // Ícone do clipboard na barra de status
+      this.add_child(
+        new St.Icon({
+          icon_name: "edit-paste-symbolic",
+          style_class: "system-status-icon",
+        })
+      );
+
+      // Carregar histórico salvo
+      this._loadHistory();
+
+      // Seção para itens favoritos
+      this._favoritesSection = new PopupMenu.PopupMenuSection();
+      this.menu.addMenuItem(this._favoritesSection);
+
+      // Adicionar separador entre favoritos e histórico normal
+      this.menu.addMenuItem(
+        new PopupMenu.PopupSeparatorMenuItem(_("Histórico"))
+      );
+
+      // Seção para histórico normal
+      this._historySection = new PopupMenu.PopupMenuSection();
+      this.menu.addMenuItem(this._historySection);
+
+      // Footer com opções adicionais
+      this._addFooterOptions();
+
+      // Atualizar o menu
+      this._updateMenu();
+
+      // Conectar ao evento de mudança no clipboard
+      this._connectToClipboard();
+    }
+
+    _connectToClipboard() {
+      this._selectionOwnerChangedId = this._selection.connect(
+        "owner-changed",
+        (selection, selectionType, selectionSource) => {
+          if (selectionType === Meta.SelectionType.SELECTION_CLIPBOARD) {
+            // Adicionar um pequeno atraso para evitar múltiplas capturas
+            if (this._timeoutId > 0) {
+              GLib.source_remove(this._timeoutId);
+              this._timeoutId = 0;
+            }
+
+            this._timeoutId = GLib.timeout_add(
+              GLib.PRIORITY_DEFAULT,
+              CLIPBOARD_SAVE_TIMEOUT,
+              () => {
+                this._checkClipboardContents();
+                this._timeoutId = 0;
+                return GLib.SOURCE_REMOVE;
+              }
+            );
+          }
+        }
+      );
+    }
+
+    _checkClipboardContents() {
+      // Verificar conteúdo de texto
+      this._clipboard.get_text(
+        St.ClipboardType.CLIPBOARD,
+        (clipboard, text) => {
+          if (text && text !== this._previousText && text.trim().length > 0) {
+            this._previousText = text;
+            this._addToHistory(text, true);
+          }
+        }
+      );
+
+      // Verificar conteúdo de imagem
+      this._clipboard.get_image(
+        St.ClipboardType.CLIPBOARD,
+        (clipboard, image) => {
+          if (image) {
+            // Converter a imagem em base64 para armazenamento
+            if (image !== this._previousImage) {
+              this._previousImage = image;
+
+              // Converter o pixbuf em texto base64 para armazenamento
+              let [width, height] = image.get_dimensions();
+
+              // Limitamos o tamanho para armazenamento
+              let scaleFactor = 1;
+              if (width > 300 || height > 300) {
+                scaleFactor = Math.min(300 / width, 300 / height);
+              }
+
+              let scaledImage = image.scale_simple(
+                width * scaleFactor,
+                height * scaleFactor,
+                2 // GDK_INTERP_BILINEAR
+              );
+
+              // Armazenar a imagem como base64 (simplificado)
+              let imageContent = `data:image/png;base64,${this._pixbufToBase64(
+                scaledImage
+              )}`;
+              this._addToHistory(imageContent, false);
+            }
+          }
+        }
+      );
+    }
+
+    _pixbufToBase64(pixbuf) {
+        if (!pixbuf)
+            return null;
+            
+        try {
+            // Use o GdkPixbuf para salvar a imagem como PNG em um buffer de memória
+            let [success, buffer] = pixbuf.save_to_bufferv('png', [], []);
+            if (!success)
+                return null;
+                
+            // Converter o buffer para base64
+            return GLib.base64_encode(buffer);
+        } catch (e) {
+            logError(e, 'Falha ao converter pixbuf para base64');
+            return null;
+        }
+    }
+
+    _addToHistory(content, isText) {
+      const newItem = new ClipboardItem(content, isText);
+
+      // Verificar se o item já existe na lista
+      const existingIndex = this._clipboardHistory.findIndex((item) =>
+        item.equals(newItem)
+      );
+
+      // Remover item existente se encontrado
+      if (existingIndex !== -1) {
+        this._clipboardHistory.splice(existingIndex, 1);
+      }
+
+      // Adicionar novo item ao início
+      this._clipboardHistory.unshift(newItem);
+
+      // Manter apenas MAX_HISTORY_ITEMS no histórico
+      if (this._clipboardHistory.length > MAX_HISTORY_ITEMS) {
+        // Vamos remover apenas itens não favoritados que excedem o limite
+        let nonFavorites = this._clipboardHistory.filter(
+          (item) => !item.isFavorite
+        );
+        let toRemove = this._clipboardHistory.length - MAX_HISTORY_ITEMS;
+
+        if (toRemove > 0 && nonFavorites.length > 0) {
+          // Começamos removendo do final da lista
+          for (
+            let i = this._clipboardHistory.length - 1;
+            i >= 0 && toRemove > 0;
+            i--
+          ) {
+            if (!this._clipboardHistory[i].isFavorite) {
+              this._clipboardHistory.splice(i, 1);
+              toRemove--;
+            }
+          }
+        }
+      }
+
+      // Atualizar menu e salvar
+      this._updateMenu();
+      this._saveHistory();
+    }
+
+    _toggleFavorite(item) {
+      item.isFavorite = !item.isFavorite;
+      this._updateMenu();
+      this._saveHistory();
+    }
+
+    _pasteItem(content, isText) {
+      if (isText) {
+        this._clipboard.set_text(St.ClipboardType.CLIPBOARD, content);
+        this._clipboard.set_text(St.ClipboardType.PRIMARY, content);
+      } else {
+        // Para imagens, precisamos converter o base64 de volta para pixbuf
+        if (content.startsWith("data:image/png;base64,")) {
+          try {
+            // Extrair a parte base64 da string
+            let base64Data = content.replace('data:image/png;base64,', '');
+            
+            // Converter base64 para bytes
+            let bytes = GLib.base64_decode(base64Data);
+            
+            // Criar um stream a partir dos bytes
+            let stream = Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(bytes));
+            
+            // Carregar como pixbuf
+            let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
+            
+            // Colocar a imagem no clipboard
+            this._clipboard.set_content(St.ClipboardType.CLIPBOARD, "image/png", pixbuf);
+          } catch (e) {
+            logError(e, 'Falha ao colar imagem');
+          }
+        }
+      }
+
+      // Simular Ctrl+V para colar automaticamente
+      this._simulateKeyPress();
+    }
+
+    _simulateKeyPress() {
+        // Simular pressionamento de Ctrl+V usando o Clutter.VirtualInputDevice
+        let backend = Clutter.get_default_backend();
+        if (!backend.get_default_seat) {
+            logError(new Error('Backend não suporta get_default_seat'));
+            return;
+        }
+
+        let seat = backend.get_default_seat();
+        if (!seat.create_virtual_device) {
+            logError(new Error('Seat não suporta create_virtual_device'));
+            return;
+        }
+
+        let virtualDevice = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+        if (!virtualDevice) {
+            logError(new Error('Não foi possível criar o dispositivo virtual'));
+            return;
+        }
+
+        // Primeiro liberamos qualquer ctrl pressionado para evitar problemas
+        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
+                                   Clutter.KEY_Control_L, 
+                                   Clutter.KeyState.RELEASED);
+
+        // Agora simulamos a sequência ctrl+v
+        // Pressiona CTRL
+        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
+                                   Clutter.KEY_Control_L, 
+                                   Clutter.KeyState.PRESSED);
+        
+        // Pressiona V
+        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
+                                   Clutter.KEY_v, 
+                                   Clutter.KeyState.PRESSED);
+        
+        // Solta V
+        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
+                                   Clutter.KEY_v, 
+                                   Clutter.KeyState.RELEASED);
+        
+        // Solta CTRL
+        virtualDevice.notify_keyval(Clutter.get_current_event_time(), 
+                                   Clutter.KEY_Control_L, 
+                                   Clutter.KeyState.RELEASED);
+
+        // Garantir que a aplicação atual receba o evento de teclado
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+            Main.findModal(null)?.popModal();
+            return GLib.SOURCE_REMOVE;
         });
-        this.menu.addMenuItem(item);
-    }
-});
-
-export default class IndicatorExampleExtension extends Extension {
-    enable() {
-        this._indicator = new Indicator();
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
-    disable() {
-        this._indicator.destroy();
-        this._indicator = null;
+    _updateMenu() {
+      // Limpar menus existentes
+      this._favoritesSection.removeAll();
+      this._historySection.removeAll();
+
+      // Adicionar itens favoritos
+      const favoriteItems = this._clipboardHistory.filter(
+        (item) => item.isFavorite
+      );
+      if (favoriteItems.length > 0) {
+        favoriteItems.forEach((item) => {
+          this._addMenuItem(item, this._favoritesSection, true);
+        });
+      } else {
+        // Mostrar mensagem se não houver favoritos
+        let emptyMenuItem = new PopupMenu.PopupMenuItem(_("Nenhum favorito"));
+        emptyMenuItem.setSensitive(false);
+        this._favoritesSection.addMenuItem(emptyMenuItem);
+      }
+
+      // Adicionar itens de histórico (excluindo favoritos)
+      const historyItems = this._clipboardHistory.filter(
+        (item) => !item.isFavorite
+      );
+      if (historyItems.length > 0) {
+        historyItems.forEach((item) => {
+          this._addMenuItem(item, this._historySection, false);
+        });
+      } else {
+        // Mostrar mensagem se não houver histórico
+        let emptyMenuItem = new PopupMenu.PopupMenuItem(_("Histórico vazio"));
+        emptyMenuItem.setSensitive(false);
+        this._historySection.addMenuItem(emptyMenuItem);
+      }
     }
+    _addMenuItem(item, section, isFavorite) {
+      let menuItem;
+
+      if (item.isText) {
+        // Truncar o texto para exibição
+        let displayText =
+          item.content.length > 50
+            ? item.content.substring(0, 47) + "..."
+            : item.content;
+        displayText = displayText.replace(/\n/g, " ");
+
+        menuItem = new PopupMenu.PopupMenuItem(displayText);
+      } else {
+        // Para imagens, criar uma visualização em miniatura
+        menuItem = new PopupMenu.PopupBaseMenuItem();
+        let box = new St.BoxLayout({ vertical: false });
+
+        if (item.content.startsWith('data:image/png;base64,')) {
+          try {
+            // Extrair a base64 da string
+            let base64Data = item.content.replace('data:image/png;base64,', '');
+            
+            // Converter base64 para bytes
+            let bytes = GLib.base64_decode(base64Data);
+            
+            // Criar um Gio.MemoryInputStream a partir dos bytes
+            let stream = Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(bytes));
+            
+            // Tentar carregar a imagem a partir do stream
+            let pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, null);
+            
+            // Criar a miniatura a partir do pixbuf
+            let textureCache = St.TextureCache.get_default();
+            let scaleFactor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            
+            // Tamanho máximo da miniatura
+            let maxWidth = 100;
+            let maxHeight = 60;
+            
+            // Criar a textura
+            let texture = new Clutter.Image();
+            texture.set_data(
+              pixbuf.get_pixels(),
+              pixbuf.get_has_alpha() ? Cogl.PixelFormat.RGBA_8888 : Cogl.PixelFormat.RGB_888,
+              pixbuf.get_width(),
+              pixbuf.get_height(),
+              pixbuf.get_rowstride()
+            );
+            
+            // Criar o ator de imagem
+            let aspectRatio = pixbuf.get_width() / pixbuf.get_height();
+            let width, height;
+            
+            if (aspectRatio > maxWidth / maxHeight) {
+              width = Math.min(pixbuf.get_width(), maxWidth);
+              height = width / aspectRatio;
+            } else {
+              height = Math.min(pixbuf.get_height(), maxHeight);
+              width = height * aspectRatio;
+            }
+            
+            let preview = new St.Icon({
+              style_class: 'clipboard-image-preview',
+            });
+            preview.set_size(width, height);
+            preview.set_content(texture);
+            
+            box.add_child(preview);
+          } catch (e) {
+            logError(e, 'Falha ao exibir imagem');
+            // Fallback para ícone de imagem se falhar
+            let icon = new St.Icon({
+              icon_name: "insert-image-symbolic",
+              style_class: "popup-menu-icon",
+            });
+            box.add_child(icon);
+          }
+        } else {
+          // Fallback para ícone de imagem
+          let icon = new St.Icon({
+            icon_name: "insert-image-symbolic",
+            style_class: "popup-menu-icon",
+          });
+          box.add_child(icon);
+        }
+
+        let label = new St.Label({ text: _("Imagem") });
+        box.add_child(label);
+
+        menuItem.add_child(box);
+      }
+
+      // Adicionar ícone de favorito
+      let favButton = new St.Button({
+        style_class: "clipboard-favorite-button",
+        x_expand: false,
+        y_expand: true,
+      });
+
+      let favIcon = new St.Icon({
+        icon_name: item.isFavorite
+          ? "starred-symbolic"
+          : "non-starred-symbolic",
+        style_class: "popup-menu-icon",
+      });
+
+      favButton.set_child(favIcon);
+      favButton.connect("clicked", () => {
+        this._toggleFavorite(item);
+        return Clutter.EVENT_STOP;
+      });
+
+      menuItem.add_child(favButton);
+
+      // Conectar evento de clique para colar o conteúdo
+      menuItem.connect("activate", () => {
+        this._pasteItem(item.content, item.isText);
+        this.menu.close();
+      });
+
+      section.addMenuItem(menuItem);
+    }
+
+    _addFooterOptions() {
+      // Separador antes das opções de rodapé
+      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // Opção para limpar histórico
+      let clearMenuItem = new PopupMenu.PopupMenuItem(_("Limpar Histórico"));
+      clearMenuItem.connect("activate", () => {
+        // Remover apenas itens não favoritos
+        this._clipboardHistory = this._clipboardHistory.filter(
+          (item) => item.isFavorite
+        );
+        this._updateMenu();
+        this._saveHistory();
+      });
+      this.menu.addMenuItem(clearMenuItem);
+
+      // Opção para limpar tudo (incluindo favoritos)
+      let clearAllMenuItem = new PopupMenu.PopupMenuItem(
+        _("Limpar Tudo (incluindo favoritos)")
+      );
+      clearAllMenuItem.connect("activate", () => {
+        this._clipboardHistory = [];
+        this._updateMenu();
+        this._saveHistory();
+      });
+      this.menu.addMenuItem(clearAllMenuItem);
+    }
+
+    _loadHistory() {
+      try {
+        // Verificar se o arquivo existe
+        let file = Gio.File.new_for_path(this._historyStoragePath);
+        if (!file.query_exists(null)) {
+          this._clipboardHistory = [];
+          return;
+        }
+
+        // Ler e analisar o arquivo JSON
+        let [success, contents] = file.load_contents(null);
+        if (success) {
+          let jsonData = JSON.parse(new TextDecoder().decode(contents));
+          this._clipboardHistory = jsonData.map(
+            (item) =>
+              new ClipboardItem(
+                item.content,
+                item.isText,
+                item.timestamp,
+                item.isFavorite
+              )
+          );
+        }
+      } catch (e) {
+        logError(e, "Falha ao carregar o histórico do clipboard");
+        this._clipboardHistory = [];
+      }
+    }
+
+    _saveHistory() {
+      try {
+        // Preparar o diretório para armazenamento
+        let file = Gio.File.new_for_path(this._historyStoragePath);
+        let parentDir = file.get_parent();
+
+        if (!parentDir.query_exists(null)) {
+          parentDir.make_directory_with_parents(null);
+        }
+
+        // Converter para JSON e salvar
+        let jsonData = JSON.stringify(this._clipboardHistory);
+        let bytes = new TextEncoder().encode(jsonData);
+
+        let [success, tag] = file.replace_contents(
+          bytes,
+          null,
+          false,
+          Gio.FileCreateFlags.REPLACE_DESTINATION,
+          null
+        );
+      } catch (e) {
+        logError(e, "Falha ao salvar o histórico do clipboard");
+      }
+    }
+    destroy() {
+      // Desconectar monitores e limpar
+      if (this._selectionOwnerChangedId > 0) {
+        this._selection.disconnect(this._selectionOwnerChangedId);
+        this._selectionOwnerChangedId = 0;
+      }
+
+      if (this._timeoutId > 0) {
+        GLib.source_remove(this._timeoutId);
+        this._timeoutId = 0;
+      }
+
+      // Salvar histórico antes de destruir
+      this._saveHistory();
+
+      super.destroy();
+    }
+  }
+);
+
+export default class SimpleClipboardExtension extends Extension {
+  enable() {
+    this._indicator = new ClipboardIndicator(this.path);
+    Main.panel.addToStatusArea(this.uuid, this._indicator);
+  }
+
+  disable() {
+    this._indicator.destroy();
+    this._indicator = null;
+  }
 }
